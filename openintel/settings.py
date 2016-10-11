@@ -74,6 +74,10 @@ env = environ.Env(  # pylint: disable=invalid-name
     PRIVACY_URL=(str, None),
     DIGEST_WEEKLY_DAY=(int, 0),  # default to Monday
     CELERY_ALWAYS_EAGER=(bool, False),
+    SAFE_BROWSING_ENABLED=(bool, False),
+    GOOGLE_API_KEY=(str, None),
+    GOOGLE_CLIENT_ID=(str, None),
+    GOOGLE_CLIENT_VERSION=(str, None),
 )
 environ.Env.read_env(os.path.join(BASE_DIR, ".env"))
 
@@ -446,3 +450,9 @@ elif env.get_value('REDIS_URL', cast=str, default=None):
     logger.info('No CELERY_BROKER_URL specified, using REDIS_URL for Celery broker and result backend')
     CELERY_BROKER_URL = env('REDIS_URL')
     CELERY_RESULT_BACKEND = env('REDIS_URL')
+
+# Google Safe Browsing API checking for source URLs
+SAFE_BROWSING_ENABLED = env('SAFE_BROWSING_ENABLED')
+GOOGLE_API_KEY = env('GOOGLE_API_KEY')
+GOOGLE_CLIENT_ID = env('GOOGLE_CLIENT_ID')
+GOOGLE_CLIENT_VERSION = env('GOOGLE_CLIENT_VERSION')

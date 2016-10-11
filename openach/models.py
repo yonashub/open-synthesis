@@ -216,6 +216,15 @@ class EvidenceSource(models.Model):
     all_objects = models.Manager()
 
 
+class EvidenceSourceScan(models.Model):
+    """Google Safe Browser API Scan Results."""
+
+    source = models.OneToOneField(EvidenceSource, on_delete=models.CASCADE, related_name='safescan')
+    unsafe = models.NullBooleanField()
+    last_scan = models.DateTimeField()
+    cache_deadline = models.DateTimeField()
+
+
 class EvidenceSourceTag(models.Model):
     """A tag that an analyst can apply to an evidence source."""
 
@@ -328,3 +337,4 @@ class DigestStatus(models.Model):
     user = models.OneToOneField(User)
     last_success = models.DateTimeField(null=True, default=None)
     last_attempt = models.DateTimeField(null=True, default=None)
+

@@ -1,5 +1,6 @@
 import datetime
 import logging
+from unittest import skipIf
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -20,9 +21,9 @@ from .metrics import hypothesis_sort_key, evidence_sort_key
 from .metrics import inconsistency, consistency, proportion_na, proportion_unevaluated
 from .metrics import mean_na_neutral_vote, consensus_vote, diagnosticity, calc_disagreement
 from .models import Board, Evidence, Hypothesis, Evaluation, Eval, ProjectNews, BoardFollower, URL_MAX_LENGTH
-from .models import UserSettings, DigestFrequency
+from .models import UserSettings, DigestFrequency, EvidenceSourceScan
 from .sitemap import BoardSitemap
-from .tasks import example_task
+from .tasks import example_task, duration_to_delta, check_urls, check_source_urls
 from .util import first_occurrences
 from .views import bitcoin_donation_url, notify_edit, notify_add
 from .views import EvidenceSource, EvidenceSourceTag, AnalystSourceTag
@@ -1708,3 +1709,57 @@ class CeleryTestCase(TestCase):
 
         self.assertEquals(result.get(), 16)
         self.assertTrue(result.successful())
+
+
+class SafeBrowsingTests(TestCase):
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user('john', 'lennon@thebeatles.com', 'johnpassword')
+        self.api_key = getattr(settings, 'GOOGLE_API_KEY')
+        self.client_id = getattr(settings, 'GOOGLE_CLIENT_ID')
+        self.client_version = getattr(settings, 'GOOGLE_CLIENT_VERSION')
+
+    def test_can_convert_duration_to_delta(self):
+        """Test that we can convert a safe browsing cache duration into a time delta."""
+        delta = duration_to_delta('300.000s')
+        self.assertEqual(datetime.timedelta(minutes=5), delta)
+
+    @skipIf(getattr(settings, 'GOOGLE_API_KEY') is None, 'Google API access not configured')
+    def test_can_match_unsafe_urls(self):
+        """Test that we can check the safeness of URLs."""
+        # example bad URLs at https://testsafebrowsing.appspot.com/
+        good_url = 'https://google.com'
+        bad_url = 'http://testsafebrowsing.appspot.com/s/phishing.html'
+        result = check_urls([good_url, bad_url], self.api_key, self.client_id, self.client_version)
+        self.assertTrue(bad_url in result)
+        self.assertFalse(good_url in result)
+
+    @skipIf(getattr(settings, 'GOOGLE_API_KEY') is None, 'Google API access not configured')
+    def test_evidence_source_scan_task(self):
+        board = create_board("Example Board", days=-1)
+        evidence = Evidence.objects.create(
+            board=board,
+            creator=self.user,
+            evidence_desc="Example Evidence"
+        )
+        source = EvidenceSource.objects.create(
+            evidence=evidence,
+            uploader=self.user,
+            # use a different URL here, or otherwise we violate Google's caching advice
+            source_url='http://testsafebrowsing.appspot.com/s/unwanted.html',
+            source_date=timezone.now() - datetime.timedelta(days=-2),
+            corroborating=True
+        )
+
+        check_source_urls()
+        self.assertGreater(EvidenceSourceScan.objects.filter(source=source).count(), 0)
+
+        scan = EvidenceSourceScan.objects.get(source=source)
+        self.assertTrue(scan.unsafe, 'Unsafe URL was marked as safe')
+        self.assertGreater(scan.cache_deadline, scan.last_scan)
+        timestamp = scan.last_scan
+
+        check_source_urls()
+        scan = EvidenceSourceScan.objects.get(source=source)
+        self.assertEqual(scan.last_scan, timestamp, 'Scan was re-run instead of using cached value')
