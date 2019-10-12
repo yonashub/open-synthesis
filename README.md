@@ -33,7 +33,7 @@ will adapt the implementation to address the challenges of public discourse.
 
 ## Platform Design Principles
 
-The platform will host the analysis of politically sensitive topics. Therefore, its design must strike a balance between
+The platform will host analysis of politically sensitive topics. Therefore, its design must strike a balance between
 freedom of speech, safety, and productivity. More specific concerns include:
 
 * Open-Source Licensing and Governance
