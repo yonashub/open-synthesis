@@ -3,21 +3,21 @@
 For more information, please see:
     https://docs.djangoproject.com/en/1.10/topics/db/models/
 """
-from enum import Enum, unique
 import datetime
 import logging
+from enum import Enum, unique
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from django.db import models
 from django.db.models import Q
-from django.urls import reverse, NoReverseMatch  # pylint: disable=no-name-in-module
+from django.urls import NoReverseMatch, reverse  # pylint: disable=no-name-in-module
 from django.utils import timezone
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from field_history.tracker import FieldHistoryTracker
 from slugify import slugify
-
 
 # See database portability constraints here: https://docs.djangoproject.com/en/1.10/ref/databases/#character-fields
 URL_MAX_LENGTH = 255
@@ -28,7 +28,7 @@ BOARD_DESC_MAX_LENGTH = 255
 SOURCE_TITLE_MAX_LENGTH = 255
 SOURCE_DESCRIPTION_MAX_LENGTH = 1000
 
-SLUG_MAX_LENGTH = getattr(settings, 'SLUG_MAX_LENGTH', 72)
+SLUG_MAX_LENGTH = getattr(settings, "SLUG_MAX_LENGTH", 72)
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -64,7 +64,9 @@ class AuthLevels(Enum):
         self.ordering = ordering
 
 
-class BoardModelManager(RemovableModelManager):  # pylint: disable=too-few-public-methods
+class BoardModelManager(
+    RemovableModelManager
+):  # pylint: disable=too-few-public-methods
     """Query manager for permissioned boards."""
 
     def user_readable(self, user):
@@ -72,21 +74,29 @@ class BoardModelManager(RemovableModelManager):  # pylint: disable=too-few-publi
         base = super(BoardModelManager, self).get_queryset()
         if user.is_staff:
             return base
-        if not user.is_authenticated:
+        elif not user.is_authenticated:
             return base.filter(permissions__read_board=AuthLevels.anyone.key)
         else:
             public = Q(permissions__read_board=AuthLevels.anyone.key)
             registered = Q(permissions__read_board=AuthLevels.registered.key)
             created = Q(permissions__board__creator=user)
-            collab = (
-                Q(permissions__read_board=AuthLevels.collaborators.key) &
-                Q(permissions__collaborators=user)
+            user_collab = Q(permissions__read_board=AuthLevels.collaborators.key) & Q(
+                permissions__collaborators=user
             )
-            return base.filter(public | registered | created | collab)
+            team_collab = Q(permissions__read_board=AuthLevels.collaborators.key) & Q(
+                permissions__teams__members=user
+            )
+            return base.filter(
+                public | registered | created | user_collab | team_collab
+            ).distinct()
 
     def public(self):
         """Queryset for boards that the public can see."""
-        return super(BoardModelManager, self).get_queryset().filter(permissions__read_board=AuthLevels.anyone.key)
+        return (
+            super(BoardModelManager, self)
+            .get_queryset()
+            .filter(permissions__read_board=AuthLevels.anyone.key)
+        )
 
 
 class Board(models.Model):
@@ -99,41 +109,44 @@ class Board(models.Model):
           https://docs.djangoproject.com/en/1.10/topics/db/models/#meta-options
         """
 
-        ordering = ('-pub_date', )
+        ordering = ("-pub_date",)
+
+    validate_special = RegexValidator(
+        r"^((?![!@#^*~`|<>{}+=\[\]]).)*$", "No special characters allowed."
+    )
+    # When user clicks 'Create Board', validator stops any instance of these characters: !@#^*~`|<>{}+=[]
 
     board_title = models.CharField(
         max_length=BOARD_TITLE_MAX_LENGTH,
         db_index=True,
-        help_text=_('The board title. Typically phrased as a question asking about what happened in the past, '
-                    'what is happening currently, or what will happen in the future'),
+        help_text=_(
+            "The board title. Typically phrased as a question asking about what happened in the past, "
+            "what is happening currently, or what will happen in the future"
+        ),
+        validators=[validate_special],
     )
 
     board_slug = models.SlugField(
-        null=True,
-        allow_unicode=False,
-        max_length=SLUG_MAX_LENGTH,
-        editable=False
+        null=True, allow_unicode=False, max_length=SLUG_MAX_LENGTH, editable=False
     )
 
     board_desc = models.CharField(
-        'board description',
+        "board description",
         max_length=BOARD_DESC_MAX_LENGTH,
         db_index=True,
-        help_text=_('A description providing context around the topic. Helps to clarify which hypotheses '
-                    'and evidence are relevant')
+        help_text=_(
+            "A description providing context around the topic. Helps to clarify which hypotheses "
+            "and evidence are relevant"
+        ),
     )
 
-    creator = models.ForeignKey(
-        User,
-        null=True,
-        on_delete=models.SET_NULL
-    )
+    creator = models.ForeignKey(User, null=True, on_delete=models.SET_NULL)
 
-    pub_date = models.DateTimeField('date published')
+    pub_date = models.DateTimeField("date published")
 
     removed = models.BooleanField(default=False)
 
-    field_history = FieldHistoryTracker(['board_title', 'board_desc', 'removed'])
+    field_history = FieldHistoryTracker(["board_title", "board_desc", "removed"])
 
     objects = BoardModelManager()
 
@@ -157,45 +170,54 @@ class Board(models.Model):
         """Return the absolute URL for viewing the board details, including the slug."""
         if self.board_slug:
             try:
-                return reverse('openach:detail_slug', args=(self.id, self.board_slug,))
+                return reverse(
+                    "openach:detail_slug",
+                    args=(
+                        self.id,
+                        self.board_slug,
+                    ),
+                )
             except NoReverseMatch:
-                logger.warning('Malformed SLUG for reverse URL match: %s', self.board_slug)
-                return reverse('openach:detail', args=(self.id,))
+                logger.warning(
+                    "Malformed SLUG for reverse URL match: %s", self.board_slug
+                )
+                return reverse("openach:detail", args=(self.id,))
         else:
             return self.get_canonical_url()
 
     def get_canonical_url(self):
         """Return the canonical URL for view board details, excluding the slug."""
-        return reverse('openach:detail', args=(self.id,))
+        return reverse("openach:detail", args=(self.id,))
 
     def is_collaborator(self, user):
         """Return True if the user is a collaborator on the board.
 
         Checks for direct collaboration and collaboration via a team.
         """
-        return self.permissions.collaborators.filter(pk=user.id).exists() or \
-               self.permissions.teams.filter(pk__in=user.team_set.values_list('id', flat=True)).exists()
+        return (
+            self.permissions.collaborators.filter(pk=user.id).exists()
+            or self.permissions.teams.filter(members__pk=user.id).exists()
+        )
 
     def collaborator_ids(self):
         """Return set of collaborator ids for the board."""
-        direct = set(self.permissions.collaborators.values_list('id', flat=True))
-        team = set(Team.objects.filter(pk__in=self.permissions.teams.all()).values_list('members__id', flat=True).distinct())
+        direct = set(self.permissions.collaborators.values_list("id", flat=True))
+        team = set(
+            Team.objects.filter(pk__in=self.permissions.teams.all())
+            .values_list("members__id", flat=True)
+            .distinct()
+        )
         return direct | team
 
     def can_read(self, user):
         """Return True if user can read the board."""
-        if user.is_staff or user == self.creator:
-            # avoid fetching permissions
-            return True
-        else:
-            read = self.permissions.read_board
-            return read == AuthLevels.anyone.key or \
-                (user.is_authenticated and read == AuthLevels.registered.key) or \
-                (read == AuthLevels.collaborators and self.is_collaborator(user))
+        return "read_board" in self.permissions.for_user(user)
 
     def has_collaborators(self):
         """Return True if the board has collaborators set."""
-        return self.permissions.collaborators.exists() or self.permissions.teams.exists()
+        return (
+            self.permissions.collaborators.exists() or self.permissions.teams.exists()
+        )
 
     def has_follower(self, user):
         """Return true iff user follows this board."""
@@ -204,7 +226,6 @@ class Board(models.Model):
 
 # https://docs.djangoproject.com/en/1.10/topics/db/managers/
 class TeamModelManager(models.Manager):  # pylint: disable=too-few-public-methods
-
     def user_visible(self, user):
         """Return teams visible to the given user.
 
@@ -213,9 +234,16 @@ class TeamModelManager(models.Manager):  # pylint: disable=too-few-public-method
         if user is None or not user.is_authenticated:
             return super().get_queryset().filter(public=True)
         else:
-            user_teams = user.team_set.values_list('id', flat=True)
-            invited = TeamRequest.objects.filter(inviter__isnull=False, invitee=user).values_list('team', flat=True)
-            return super().get_queryset().filter(Q(public=True) | Q(id__in=user_teams) | Q(id__in=invited))
+            user_teams = user.team_set.values_list("id", flat=True)
+            invited = TeamRequest.objects.filter(
+                inviter__isnull=False, invitee=user
+            ).values_list("team", flat=True)
+            return (
+                super()
+                .get_queryset()
+                .filter(Q(public=True) | Q(id__in=user_teams) | Q(id__in=invited))
+                .distinct()
+            )
 
 
 class Team(models.Model):
@@ -224,17 +252,14 @@ class Team(models.Model):
     objects = TeamModelManager()
 
     creator = models.ForeignKey(
-        User,
-        null=True,
-        on_delete=models.SET_NULL,
-        related_name='+'
+        User, null=True, on_delete=models.SET_NULL, related_name="+"
     )
 
     owner = models.ForeignKey(
         User,
         null=True,
         on_delete=models.SET_NULL,
-        related_name='+',
+        related_name="+",
     )
 
     name = models.CharField(max_length=64, unique=True)
@@ -246,21 +271,22 @@ class Team(models.Model):
     members = models.ManyToManyField(User, blank=True, editable=False)
 
     public = models.BooleanField(
-        default=True,
-        help_text=_('Whether or not the team is visible to non-members')
+        default=True, help_text=_("Whether or not the team is visible to non-members")
     )
 
     invitation_required = models.BooleanField(default=True)
 
     create_timestamp = models.DateTimeField(auto_now_add=True)
 
-    field_history = FieldHistoryTracker(['name', 'description', 'url', 'public', 'invitation_required'])
+    field_history = FieldHistoryTracker(
+        ["name", "description", "url", "public", "invitation_required"]
+    )
 
     def __str__(self):
         return self.name
 
     def get_absolute_url(self):
-        return reverse('openach:view_team', args=(self.id,))
+        return reverse("openach:view_team", args=(self.id,))
 
 
 class TeamRequest(models.Model):
@@ -271,7 +297,7 @@ class TeamRequest(models.Model):
     """
 
     class Meta:
-        unique_together = (('team', 'inviter', 'invitee'),)
+        unique_together = (("team", "inviter", "invitee"),)
 
     team = models.ForeignKey(Team, on_delete=models.CASCADE)
 
@@ -279,7 +305,7 @@ class TeamRequest(models.Model):
         User,
         null=True,
         blank=True,
-        related_name='+',
+        related_name="+",
         on_delete=models.CASCADE,
     )
 
@@ -287,7 +313,7 @@ class TeamRequest(models.Model):
         User,
         null=True,
         blank=True,
-        related_name='team_invites',
+        related_name="team_invites",
         on_delete=models.CASCADE,
     )
 
@@ -295,42 +321,42 @@ class TeamRequest(models.Model):
 
     def clean(self):
         if self.inviter is None and self.invitee is None:
-            raise ValidationError(_('Team membership request must have an initiator'))
+            raise ValidationError(_("Team membership request must have an initiator"))
 
 
 class BoardPermissions(models.Model):
     """Permissions for the board."""
 
     AUTH_CHOICES = [
-        (AuthLevels.board_creator.key, _('Only Me')),
-        (AuthLevels.collaborators.key, _('Collaborators')),
-        (AuthLevels.registered.key, _('Registered Users')),
-        (AuthLevels.anyone.key, _('Public')),
+        (AuthLevels.board_creator.key, _("Only Me")),
+        (AuthLevels.collaborators.key, _("Collaborators")),
+        (AuthLevels.registered.key, _("Registered Users")),
+        (AuthLevels.anyone.key, _("Public")),
     ]
 
     AUTH_CHOICES_REGISTERED = [
-        (AuthLevels.board_creator.key, _('Only Me')),
-        (AuthLevels.collaborators.key, _('Collaborators')),
-        (AuthLevels.registered.key, _('Registered Users')),
+        (AuthLevels.board_creator.key, _("Only Me")),
+        (AuthLevels.collaborators.key, _("Collaborators")),
+        (AuthLevels.registered.key, _("Registered Users")),
     ]
 
     PERMISSION_NAMES = [
-        'read_board',
-        'read_comments',
-        'add_comments',
-        'add_elements',
-        'edit_elements',
-        'edit_board',
+        "read_board",
+        "read_comments",
+        "add_comments",
+        "add_elements",
+        "edit_elements",
+        "edit_board",
     ]
 
     PERMISSION_NAMES_READ = [
-        'read_board',
-        'read_comments',
+        "read_board",
+        "read_comments",
     ]
 
     board = models.OneToOneField(
         Board,
-        related_name='permissions',
+        related_name="permissions",
         on_delete=models.CASCADE,
     )
 
@@ -346,47 +372,51 @@ class BoardPermissions(models.Model):
 
     read_board = models.PositiveSmallIntegerField(
         choices=AUTH_CHOICES,
-        help_text=_('Who can view the board?'),
+        help_text=_("Who can view the board?"),
         default=AuthLevels.anyone.key,
     )
 
     read_comments = models.PositiveSmallIntegerField(
         choices=AUTH_CHOICES,
-        help_text=_('Who can view board comments?'),
+        help_text=_("Who can view board comments?"),
         default=AuthLevels.anyone.key,
     )
 
     add_comments = models.PositiveSmallIntegerField(
         choices=AUTH_CHOICES_REGISTERED,
-        help_text=_('Who can comment on the board?'),
+        help_text=_("Who can comment on the board?"),
         default=AuthLevels.collaborators.key,
     )
 
     add_elements = models.PositiveSmallIntegerField(
         choices=AUTH_CHOICES_REGISTERED,
-        help_text=_('Who can add hypotheses, evidence, and sources?'),
+        help_text=_("Who can add hypotheses, evidence, and sources?"),
         default=AuthLevels.collaborators.key,
     )
 
     edit_elements = models.PositiveSmallIntegerField(
         choices=AUTH_CHOICES_REGISTERED,
-        help_text=_('Who can edit hypotheses, evidence, and sources?'),
+        help_text=_("Who can edit hypotheses, evidence, and sources?"),
         default=AuthLevels.collaborators.key,
     )
 
     edit_board = models.PositiveSmallIntegerField(
         choices=AUTH_CHOICES_REGISTERED,
-        help_text=_('Who can edit the board title, description, and permissions?'),
+        help_text=_("Who can edit the board title, description, and permissions?"),
         default=AuthLevels.board_creator.key,
     )
 
     def make_public(self):
         """Set permissions to the most permissive permission scheme."""
+        account_required = getattr(settings, "ACCOUNT_REQUIRED", False)
+
         for permission in self.PERMISSION_NAMES:
-            if permission in self.PERMISSION_NAMES_READ and not getattr(settings, 'ACCOUNT_REQUIRED', False):
-                setattr(self, permission, AuthLevels.anyone.key)
-            else:
-                setattr(self, permission, AuthLevels.registered.key)
+            public_perm = (
+                AuthLevels.anyone.key
+                if permission in self.PERMISSION_NAMES_READ and not account_required
+                else AuthLevels.registered.key
+            )
+            setattr(self, permission, public_perm)
         self.save()
 
     def update_all(self, auth_level):
@@ -407,18 +437,24 @@ class BoardPermissions(models.Model):
             else BoardPermissions.PERMISSION_NAMES_READ
         )
 
-        is_owner = self.board.creator_id is not None and user.id == self.board.creator_id
+        is_owner = (
+            self.board.creator_id is not None and user.id == self.board.creator_id
+        )
 
         if user.is_staff or is_owner:
             return set(max_allowed)
         else:
-            is_collaborator = self.collaborators.filter(pk=user.id).exists()
+            is_user_collaborator = self.collaborators.filter(pk=user.id).exists()
+            is_team_collaborator = self.teams.filter(members__pk=user.id).exists()
+            is_collaborator = is_user_collaborator or is_team_collaborator
 
             def check_allowed(permission):
                 level = getattr(self, permission, AuthLevels.board_creator.key)
-                return level == AuthLevels.anyone.key or \
-                       (level == AuthLevels.registered.key and user.is_authenticated) or \
-                       (level == AuthLevels.collaborators.key and is_collaborator)
+                return (
+                    level == AuthLevels.anyone.key
+                    or (level == AuthLevels.registered.key and user.is_authenticated)
+                    or (level == AuthLevels.collaborators.key and is_collaborator)
+                )
 
             return set(filter(check_allowed, max_allowed))
 
@@ -432,18 +468,33 @@ class BoardPermissions(models.Model):
 
         errors = {}
 
-        if getattr(settings, 'ACCOUNT_REQUIRED', True) and self.read_board == AuthLevels.collaborators.anyone.key:
-            errors['read_board'] = _('Cannot set permission to public because site permits only registered users')
+        if (
+            getattr(settings, "ACCOUNT_REQUIRED", True)
+            and self.read_board == AuthLevels.collaborators.anyone.key
+        ):
+            errors["read_board"] = _(
+                "Cannot set permission to public because site permits only registered users"
+            )
         if self.add_comments > self.read_comments:
-            errors['add_comments'] = _('Cannot be more permissive than the "read comments" permission')
+            errors["add_comments"] = _(
+                'Cannot be more permissive than the "read comments" permission'
+            )
         if self.edit_elements > self.add_elements:
-            errors['edit_elements'] = _('Cannot be more permissive than the "add elements" permission')
+            errors["edit_elements"] = _(
+                'Cannot be more permissive than the "add elements" permission'
+            )
         if self.read_comments > self.read_board:
-            errors['read_comments'] = _('Cannot be more permissive than the "read board" permission')
+            errors["read_comments"] = _(
+                'Cannot be more permissive than the "read board" permission'
+            )
         if self.add_elements > self.read_board:
-            errors['add_elements'] = _('Cannot be more permissive than the "read board" permission')
+            errors["add_elements"] = _(
+                'Cannot be more permissive than the "read board" permission'
+            )
         if self.edit_board > self.edit_elements:
-            errors['edit_board'] = _('Cannot be more permissive than the "edit elements" permission')
+            errors["edit_board"] = _(
+                'Cannot be more permissive than the "edit elements" permission'
+            )
 
         if len(errors) > 0:
             raise ValidationError(errors)
@@ -452,7 +503,7 @@ class BoardPermissions(models.Model):
 class BoardFollower(models.Model):
     """Follower relationship between a user and a board."""
 
-    board = models.ForeignKey(Board, on_delete=models.CASCADE, related_name='followers')
+    board = models.ForeignKey(Board, on_delete=models.CASCADE, related_name="followers")
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     is_creator = models.BooleanField(default=False)
     is_contributor = models.BooleanField(default=False)
@@ -469,7 +520,7 @@ class Hypothesis(models.Model):
     )
 
     hypothesis_text = models.CharField(
-        'hypothesis',
+        "hypothesis",
         max_length=HYPOTHESIS_MAX_LENGTH,
     )
 
@@ -480,7 +531,7 @@ class Hypothesis(models.Model):
     )
 
     submit_date = models.DateTimeField(
-        'date added',
+        "date added",
         auto_now_add=True,
     )
 
@@ -488,7 +539,7 @@ class Hypothesis(models.Model):
         default=False,
     )
 
-    field_history = FieldHistoryTracker(['hypothesis_text', 'removed'])
+    field_history = FieldHistoryTracker(["hypothesis_text", "removed"])
 
     objects = RemovableModelManager()
 
@@ -520,26 +571,28 @@ class Evidence(models.Model):
     )
 
     evidence_desc = models.CharField(
-        'evidence description',
+        "evidence description",
         max_length=EVIDENCE_MAX_LENGTH,
-        help_text=_('A short summary of the evidence. Use the event date field for capturing the date')
+        help_text=_(
+            "A short summary of the evidence. Use the event date field for capturing the date"
+        ),
     )
 
     event_date = models.DateField(
-        'evidence event date',
+        "evidence event date",
         # Don't require evidence date because some evidence doesn't have a fixed start date. However, it can be useful
         # to sort evidence by when it occurred, therefore in the future we might want to allow setting a year, month,
         # or complete date
         null=True,
         blank=True,
-        help_text=_('The date the event occurred or started')
+        help_text=_("The date the event occurred or started"),
     )
 
-    submit_date = models.DateTimeField('date added', auto_now_add=True)
+    submit_date = models.DateTimeField("date added", auto_now_add=True)
 
     removed = models.BooleanField(default=False)
 
-    field_history = FieldHistoryTracker(['evidence_desc', 'event_date', 'removed'])
+    field_history = FieldHistoryTracker(["evidence_desc", "event_date", "removed"])
 
     objects = RemovableModelManager()
     all_objects = models.Manager()
@@ -559,7 +612,7 @@ class Evidence(models.Model):
 
     def get_canonical_url(self):
         """Return the canonical URL for view evidence details."""
-        return reverse('openach:evidence_detail', args=(self.id,))
+        return reverse("openach:evidence_detail", args=(self.id,))
 
 
 class EvidenceSource(models.Model):
@@ -571,27 +624,31 @@ class EvidenceSource(models.Model):
     )
 
     source_url = models.URLField(
-        'source website',
+        "source website",
         max_length=URL_MAX_LENGTH,
-        help_text=_('A source (e.g., news article or press release) corroborating the evidence'),
+        help_text=_(
+            "A source (e.g., news article or press release) corroborating the evidence"
+        ),
     )
 
     source_title = models.CharField(
-        'source title',
+        "source title",
         max_length=SOURCE_TITLE_MAX_LENGTH,
-        default='',
+        default="",
     )
 
     source_description = models.CharField(
-        'source description',
+        "source description",
         max_length=SOURCE_DESCRIPTION_MAX_LENGTH,
-        default='',
+        default="",
     )
 
     source_date = models.DateField(
-        'source date',
-        help_text=_('The date the source released or last updated the information corroborating the evidence. '
-                    'Typically the date of the article or post'),
+        "source date",
+        help_text=_(
+            "The date the source released or last updated the information corroborating the evidence. "
+            "Typically the date of the article or post"
+        ),
     )
 
     uploader = models.ForeignKey(
@@ -601,7 +658,7 @@ class EvidenceSource(models.Model):
     )
 
     submit_date = models.DateTimeField(
-        'date added',
+        "date added",
         auto_now_add=True,
     )
 
@@ -630,7 +687,7 @@ class AnalystSourceTag(models.Model):
     source = models.ForeignKey(EvidenceSource, on_delete=models.CASCADE)
     tagger = models.ForeignKey(User, on_delete=models.CASCADE)
     tag = models.ForeignKey(EvidenceSourceTag, on_delete=models.CASCADE)
-    tag_date = models.DateTimeField('date tagged', auto_now_add=True)
+    tag_date = models.DateTimeField("date tagged", auto_now_add=True)
 
 
 @unique
@@ -649,18 +706,18 @@ class Evaluation(models.Model):
     """A user's evaluation of a hypothesis with respect to a piece of evidence."""
 
     EVALUATION_OPTIONS = (
-        (Eval.not_applicable.value, _('N/A')),
-        (Eval.very_inconsistent.value, _('Very Inconsistent')),
-        (Eval.inconsistent.value, _('Inconsistent')),
-        (Eval.neutral.value, _('Neutral')),
-        (Eval.consistent.value, _('Consistent')),
-        (Eval.very_consistent.value, _('Very Consistent')),
+        (Eval.not_applicable.value, _("N/A")),
+        (Eval.very_inconsistent.value, _("Very Inconsistent")),
+        (Eval.inconsistent.value, _("Inconsistent")),
+        (Eval.neutral.value, _("Neutral")),
+        (Eval.consistent.value, _("Consistent")),
+        (Eval.very_consistent.value, _("Very Consistent")),
     )
     board = models.ForeignKey(Board, on_delete=models.CASCADE)
     hypothesis = models.ForeignKey(Hypothesis, on_delete=models.CASCADE)
     evidence = models.ForeignKey(Evidence, on_delete=models.CASCADE)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    timestamp = models.DateTimeField('date evaluated', auto_now=True)
+    timestamp = models.DateTimeField("date evaluated", auto_now=True)
     value = models.PositiveSmallIntegerField(default=0, choices=EVALUATION_OPTIONS)
 
     def __str__(self):
@@ -673,11 +730,11 @@ class ProjectNews(models.Model):
     """A news alert for the front page."""
 
     class Meta:
-        verbose_name_plural = 'project news'
+        verbose_name_plural = "project news"
 
     content = models.CharField(max_length=1024)
 
-    pub_date = models.DateTimeField('date published')
+    pub_date = models.DateTimeField("date published")
 
     author = models.ForeignKey(
         User,
@@ -708,22 +765,24 @@ class UserSettings(models.Model):
     """User account preferences."""
 
     DIGEST_FREQUENCY = (
-        (DigestFrequency.never.key, _('Never')),
-        (DigestFrequency.daily.key, _('Daily')),
-        (DigestFrequency.weekly.key, _('Weekly')),
+        (DigestFrequency.never.key, _("Never")),
+        (DigestFrequency.daily.key, _("Daily")),
+        (DigestFrequency.weekly.key, _("Weekly")),
     )
 
     user = models.OneToOneField(
         User,
-        related_name='settings',
+        related_name="settings",
         on_delete=models.CASCADE,
     )
 
     digest_frequency = models.PositiveSmallIntegerField(
-        _('email digest frequency'),
+        _("email digest frequency"),
         default=DigestFrequency.daily.key,
         choices=DIGEST_FREQUENCY,
-        help_text=_('How frequently to receive email updates containing new notifications'),
+        help_text=_(
+            "How frequently to receive email updates containing new notifications"
+        ),
     )
 
 
